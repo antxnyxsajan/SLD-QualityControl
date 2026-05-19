@@ -21,6 +21,8 @@ class RTTMValidator:
         
         self.errors = []
         self.warnings = []
+        self.count=0
+        self.countover=0
 
     def validate_file(self, filepath):
         segments_by_file = collections.defaultdict(list)
@@ -44,7 +46,9 @@ class RTTMValidator:
         return {
             "is_valid": len(self.errors) == 0,
             "errors": self.errors,
-            "warnings": self.warnings
+            "warnings": self.warnings,
+            "short_segment_count": self.count,
+            "overlaped segments": self.countover
         }
 
     def _parse_and_validate_syntax(self, line, line_num):
@@ -89,15 +93,15 @@ class RTTMValidator:
         if seg['duration'] <= 0:
             self.errors.append(f"Line {line_num}: Invalid duration. Duration is <= 0 ({seg['duration']}).")
 
-        # 5. Out-of-bounds timestamps
+        # 6. Out-of-bounds timestamps
         max_dur = self.audio_duration_map.get(seg['file_id'])
         if max_dur and seg['end'] > max_dur:
             self.errors.append(f"Line {line_num}: Out of bounds. Segment ends at {seg['end']}s, audio length is {max_dur}s.")
-        
-         # 6. Extremely short segments
+
+        # 9. Extremely short segments
         if 0 < seg['duration'] < self.short_segment_threshold:
             self.errors.append(f"Line {line_num}: Extremely short segment detected ({seg['duration']}s).")
-
+            self.count+=1
 
     def _validate_file_level(self, file_id, segments):
         # Sort by start time for sequential checks
@@ -109,7 +113,7 @@ class RTTMValidator:
         for i in range(len(segments)):
             line_num, seg = segments[i]
             
-            # 7. Language Tag Consistency
+            # 8. Language Tag Consistency
             # Ensure a single speaker ID isn't tagged with multiple conflicting languages
             spk = seg['speaker_id']
             lang = seg['language']
@@ -130,6 +134,7 @@ class RTTMValidator:
                 # 2. Segment overlaps (General overlapping speech)
                 if seg['start'] < prev_seg['end']:
                     self.warnings.append(f"Between Lines {prev_line_num} and {line_num}: Speakers overlap.")
+                    self.countover+=1
 
             # 7. Speaker Duplication (Same speaker overlaps themselves)
             for prev_spk_line, prev_spk_seg in speaker_history[spk]:
@@ -163,7 +168,7 @@ if __name__ == "__main__":
     # Create a dummy RTTM file for testing
     test_rttm_content = """SPEAKER B007 1 1.789 1.136 <NA> <NA> S1 <NA> <NA>
 SPEAKER B007 1 4.189 2.459 <NA> <NA> S2 <NA> <NA>
-SPEAKER B007 1 6.640 0.759 <NA> <NA> S3 <NA> <NA>
+SPEAKER B007 1 6.640 0.159 <NA> <NA> S3 <NA> <NA>
 SPEAKER B007 1 7.438 0.920 <NA> <NA> S2 <NA> <NA>
 SPEAKER B007 1 8.004 0.679 <NA> <NA> S3 <NA> <NA>
 SPEAKER B007 1 10.984 0.229 <NA> <NA> S1 <NA> <NA>
@@ -181,9 +186,13 @@ SPEAKER B007 1 20.272 1.351 <NA> <NA> S2 <NA> <NA>
 
     print(f"Is Valid: {results['is_valid']}\n")
     print("ERRORS:")
+
     for err in results['errors']:
         print(f" - {err}")
+    print(f"count :{results['short_segment_count']}")
         
     print("\nWARNINGS:")
     for warn in results['warnings']:
         print(f" - {warn}")
+    print(f"count :{results['overlaped segments']}")
+    
