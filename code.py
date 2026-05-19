@@ -2,7 +2,7 @@ import collections
 
 class RTTMValidator:
     def __init__(self, 
-                 short_segment_threshold=0.05, 
+                 short_segment_threshold=0.2, 
                  density_window=10.0, 
                  density_max_segments=20,
                  audio_duration_map=None):
@@ -89,14 +89,15 @@ class RTTMValidator:
         if seg['duration'] <= 0:
             self.errors.append(f"Line {line_num}: Invalid duration. Duration is <= 0 ({seg['duration']}).")
 
-        # 6. Out-of-bounds timestamps
+        # 5. Out-of-bounds timestamps
         max_dur = self.audio_duration_map.get(seg['file_id'])
         if max_dur and seg['end'] > max_dur:
             self.errors.append(f"Line {line_num}: Out of bounds. Segment ends at {seg['end']}s, audio length is {max_dur}s.")
-
-        # 9. Extremely short segments
+        
+         # 6. Extremely short segments
         if 0 < seg['duration'] < self.short_segment_threshold:
-            self.warnings.append(f"Line {line_num}: Extremely short segment detected ({seg['duration']}s).")
+            self.errors.append(f"Line {line_num}: Extremely short segment detected ({seg['duration']}s).")
+
 
     def _validate_file_level(self, file_id, segments):
         # Sort by start time for sequential checks
@@ -108,7 +109,7 @@ class RTTMValidator:
         for i in range(len(segments)):
             line_num, seg = segments[i]
             
-            # 8. Language Tag Consistency
+            # 7. Language Tag Consistency
             # Ensure a single speaker ID isn't tagged with multiple conflicting languages
             spk = seg['speaker_id']
             lang = seg['language']
