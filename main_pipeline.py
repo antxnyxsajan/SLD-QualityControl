@@ -4,6 +4,7 @@ from importlib import import_module
 # Dynamically import modules that start with numbers
 structural_module = import_module('step1_structuralValidator')
 acoustic_module = import_module('step2_acousticValidator')
+language_module = import_module('step3_languageValidator')
 
 def run_pipeline(rttm_filepath, audio_filepath=None):
     print(f"--- Starting Quality Control Pipeline ---")
@@ -44,6 +45,22 @@ def run_pipeline(rttm_filepath, audio_filepath=None):
     if acoustic_results['warnings']:
         print("Acoustic Warnings:")
         for warn in acoustic_results['warnings']:
+            print(f"  - {warn}")
+    
+    # 3. Language Validation
+    print("\n[3] Running Language Validation...")
+    language_validator = language_module.LanguageValidator()
+    
+    lang_results = language_validator.validate(rttm_filepath, audio_filepath, struct_results)
+    
+    print(f"Language Validation Passed: {lang_results['is_valid']}")
+    if lang_results['errors']:
+        print("Language Errors:")
+        for err in lang_results['errors']:
+            print(f"  - {err}")
+    if lang_results['warnings']:
+        print("Language Warnings:")
+        for warn in lang_results['warnings']:
             print(f"  - {warn}")
             
     print("\n--- Pipeline Finished ---")
