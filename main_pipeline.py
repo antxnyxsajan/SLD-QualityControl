@@ -34,19 +34,26 @@ def run_pipeline(rttm_filepath, audio_filepath=None):
     
     # Assuming acoustic validator might need an audio file in the future
     # acoustic_results = acoustic_validator.validate(audio_filepath)
-    acoustic_results = acoustic_validator.validate(rttm_filepath)
+    acoustic_results = acoustic_validator.validate(rttm_filepath, audio_filepath, struct_results)
     
     print(f"Acoustic Validation Passed: {acoustic_results['is_valid']}")
     if acoustic_results['errors']:
         print("Acoustic Errors:")
         for err in acoustic_results['errors']:
             print(f"  - {err}")
+    if acoustic_results['warnings']:
+        print("Acoustic Warnings:")
+        for warn in acoustic_results['warnings']:
+            print(f"  - {warn}")
             
     print("\n--- Pipeline Finished ---")
 
 if __name__ == "__main__":
     rttm_test_file = "test.rttm"
+    audio_test_file = None
     if len(sys.argv) > 1:
         rttm_test_file = sys.argv[1]
+    if len(sys.argv) > 2:
+        audio_test_file = sys.argv[2]
     
-    run_pipeline(rttm_test_file)
+    run_pipeline(rttm_test_file, audio_test_file)

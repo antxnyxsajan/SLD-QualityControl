@@ -1,0 +1,7 @@
+pip install speechbrain torchaudio
+pip uninstall torch torchvision torchaudio
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+
+To run:
+python main_pipeline.py path/to/your/audio.rttm path/to/your/audio.wav
