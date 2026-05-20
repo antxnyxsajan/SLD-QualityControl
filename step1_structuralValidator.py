@@ -189,10 +189,10 @@ SPEAKER B007 1 20.272 1.351 <NA> <NA> S2 <NA> <NA>
 
     for err in results['errors']:
         print(f" - {err}")
-    print(f"count :{results['short_segment_count']}")
+    print(f"\n - SHORT SEGMENT COUNT :{results['short_segment_count']}")
         
     print("\nWARNINGS:")
     for warn in results['warnings']:
         print(f" - {warn}")
-    print(f"count :{results['overlaped segments']}")
+    print(f"\n - OVERLAPPING COUNT :{results['overlaped segments']}")
     
