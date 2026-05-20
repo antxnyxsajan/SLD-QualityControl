@@ -20,10 +20,12 @@ def run_pipeline(rttm_filepath, audio_filepath=None):
         print("Structural Errors:")
         for err in struct_results['errors']:
             print(f"  - {err}")
+    print(f"\n - SHORT SEGMENT COUNT :{struct_results['short_segment_count']}")
     if struct_results['warnings']:
-        print("Structural Warnings:")
+        print("\nStructural Warnings:")
         for warn in struct_results['warnings']:
             print(f"  - {warn}")
+    print(f"\n - OVERLAPPING COUNT :{struct_results['overlaped segments']}")
             
     # 2. Acoustic Validation
     print("\n[2] Running Acoustic Validation...")
