@@ -93,7 +93,7 @@ class AcousticValidator:
                         anchor_seg = test_seg
                         anchor_wave = test_wave
                     else:
-                        self.errors.append(f"Line {test_seg['line']}: Voice mismatch for Speaker {speaker_id}. "
+                        self.errors.append(f"Line {test_seg['line']} (Duration: {test_seg['duration']:.2f}s): Voice mismatch for Speaker {speaker_id}. "
                                            f"Does not match previous valid occurrence at {anchor_seg['start']}s. "
                                            f"(Similarity: {sim_score:.2f})")
                     pbar.update(1)

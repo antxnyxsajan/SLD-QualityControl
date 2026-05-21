@@ -12,6 +12,8 @@ class LanguageValidator:
     def _slice_tensor(self, full_waveform, sample_rate, start_sec, duration_sec):
         """Slices the audio tensor in memory."""
         frame_offset = int(start_sec * sample_rate)
+
+        
         num_frames = int(duration_sec * sample_rate)
         return full_waveform[:, frame_offset:frame_offset + num_frames]
 
@@ -117,7 +119,7 @@ class LanguageValidator:
                             anchor_language = test_language
                         else:
                             self.errors.append(
-                                f"Line {test_seg['line']}: Language Mismatch. Expected '{anchor_language}' (from previous valid occurrence at {anchor_seg['start']}s), "
+                                f"Line {test_seg['line']} (Duration: {test_seg['duration']:.2f}s): Language Mismatch. Expected '{anchor_language}' (from previous valid occurrence at {anchor_seg['start']}s), "
                                 f"but AI detected '{test_language}' (confidence: {test_confidence:.2f})."
                             )
                     except Exception as e:
