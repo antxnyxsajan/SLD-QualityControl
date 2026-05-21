@@ -68,13 +68,26 @@ class LanguageValidator:
                     
                 segments.sort(key=lambda x: x['start'])
                 
-                # Find the language of the first occurrence
                 anchor_seg = segments[0]
-                if anchor_seg['duration'] < 1.0:
-                    self.warnings.append(f"Line {anchor_seg['line']}: Anchor segment too short ({anchor_seg['duration']}s) for reliable Language ID.")
-                    # We'll still try
                 
-                anchor_wave = self._slice_tensor(full_waveform, sample_rate, anchor_seg['start'], anchor_seg['duration'])
+                # Combine first few segments until we reach >= 5.0 seconds for a reliable anchor
+                anchor_duration = 0.0
+                anchor_waves = []
+                for seg in segments:
+                    wave = self._slice_tensor(full_waveform, sample_rate, seg['start'], seg['duration'])
+                    if wave.size(1) > 0:
+                        anchor_waves.append(wave)
+                        anchor_duration += seg['duration']
+                    if anchor_duration >= 5.0:
+                        break
+                
+                if anchor_duration < 1.0:
+                    self.warnings.append(f"Line {anchor_seg['line']}: Combined anchor segment too short ({anchor_duration:.2f}s) for reliable Language ID.")
+                
+                if anchor_waves:
+                    anchor_wave = torch.cat(anchor_waves, dim=1)
+                else:
+                    anchor_wave = self._slice_tensor(full_waveform, sample_rate, anchor_seg['start'], anchor_seg['duration'])
                 
                 try:
                     anchor_language, anchor_confidence = self.language_system.identify_language(anchor_wave, sample_rate)
