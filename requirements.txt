@@ -1,7 +1,12 @@
-pip install speechbrain torchaudio
-pip uninstall torch torchvision torchaudio
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# Core AI Libraries
+speechbrain
+openai-whisper
+soundfile
 
+# Note for PyTorch/CUDA:
+# To install the GPU-accelerated version of PyTorch, run this manually:
+# pip uninstall torch torchvision torchaudio
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
-To run:
-python main_pipeline.py path/to/your/audio.rttm path/to/your/audio.wav
+# To run the pipeline:
+# python main_pipeline.py --rttm path/to/speaker.rttm --rttml path/to/language.rttm --audio path/to/audio.wav

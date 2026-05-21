@@ -43,12 +43,15 @@ class RTTMValidator:
         for file_id, segments in segments_by_file.items():
             self._validate_file_level(file_id, segments)
 
+        score = max(0, 100 - (len(self.errors) * 5) - (len(self.warnings) * 1))
+        
         return {
             "is_valid": len(self.errors) == 0,
             "errors": self.errors,
             "warnings": self.warnings,
             "short_segment_count": self.count,
-            "overlaped segments": self.countover
+            "overlaped segments": self.countover,
+            "score": score
         }
 
     def _parse_and_validate_syntax(self, line, line_num):
