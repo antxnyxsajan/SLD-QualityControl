@@ -21,10 +21,24 @@ class RTTMValidator:
         
         self.errors = []
         self.warnings = []
-        self.count=0
-        self.countover=0
+        self.count = 0
+        self.countover = 0
+
+    def _anomaly(self, line, severity, message, confidence=None):
+        """Constructs a standardized anomaly dictionary."""
+        return {
+            "line": line,
+            "severity": severity,
+            "confidence": confidence,
+            "message": message
+        }
 
     def validate_file(self, filepath):
+        self.errors = []
+        self.warnings = []
+        self.count = 0
+        self.countover = 0
+
         segments_by_file = collections.defaultdict(list)
         
         # Step 1: Syntax and Segment-Level Checks
@@ -59,18 +73,27 @@ class RTTMValidator:
         
         # 1. RTTM Syntax Check (Adapted for your 10-column LANGUAGE format)
         if len(parts) not in [9, 10]:
-            self.errors.append(f"Line {line_num}: Invalid column count. Expected 9 or 10, got {len(parts)}.")
+            self.errors.append(self._anomaly(
+                line_num, "SEVERE",
+                f"Invalid column count. Expected 9 or 10, got {len(parts)}."
+            ))
             return None
             
         if parts[0] not in ["SPEAKER", "LANGUAGE"]:
-            self.errors.append(f"Line {line_num}: Invalid type. Expected 'SPEAKER' or 'LANGUAGE', got '{parts[0]}'.")
+            self.errors.append(self._anomaly(
+                line_num, "SEVERE",
+                f"Invalid type. Expected 'SPEAKER' or 'LANGUAGE', got '{parts[0]}'."
+            ))
             return None
 
         try:
             start_time = float(parts[3])
             duration = float(parts[4])
         except ValueError:
-            self.errors.append(f"Line {line_num}: Start time and duration must be numeric floats.")
+            self.errors.append(self._anomaly(
+                line_num, "SEVERE",
+                "Start time and duration must be numeric floats."
+            ))
             return None
 
         return {
@@ -82,29 +105,41 @@ class RTTMValidator:
             "end": start_time + duration,
             "ortho": parts[5],
             "subtype": parts[6],
-            "language": parts[7], # Taking L1 or L2
-            "speaker_id": parts[7], # Treating the language class as the 'speaker' for overlap logic
+            "language": parts[7],
+            "speaker_id": parts[7],
             "confidence": parts[8] if len(parts) > 8 else "<NA>"
         }
 
     def _validate_segment_logic(self, seg, line_num):
         # 3. Impossible timestamps
         if seg['start'] < 0:
-            self.errors.append(f"Line {line_num}: Impossible timestamp. Start time is negative ({seg['start']}).")
+            self.errors.append(self._anomaly(
+                line_num, "SEVERE",
+                f"Impossible timestamp. Start time is negative ({seg['start']})."
+            ))
             
         # 4. Negative durations
         if seg['duration'] <= 0:
-            self.errors.append(f"Line {line_num}: Invalid duration. Duration is <= 0 ({seg['duration']}).")
+            self.errors.append(self._anomaly(
+                line_num, "SEVERE",
+                f"Invalid duration. Duration is <= 0 ({seg['duration']})."
+            ))
 
         # 6. Out-of-bounds timestamps
         max_dur = self.audio_duration_map.get(seg['file_id'])
         if max_dur and seg['end'] > max_dur:
-            self.errors.append(f"Line {line_num}: Out of bounds. Segment ends at {seg['end']}s, audio length is {max_dur}s.")
+            self.errors.append(self._anomaly(
+                line_num, "SEVERE",
+                f"Out of bounds. Segment ends at {seg['end']}s, audio length is {max_dur}s."
+            ))
 
         # 9. Extremely short segments
         if 0 < seg['duration'] < self.short_segment_threshold:
-            self.errors.append(f"Line {line_num}: Extremely short segment detected ({seg['duration']}s).")
-            self.count+=1
+            self.warnings.append(self._anomaly(
+                line_num, "LOW",
+                f"Extremely short segment detected ({seg['duration']}s)."
+            ))
+            self.count += 1
 
     def _validate_file_level(self, file_id, segments):
         # Sort by start time for sequential checks
@@ -117,11 +152,13 @@ class RTTMValidator:
             line_num, seg = segments[i]
             
             # 8. Language Tag Consistency
-            # Ensure a single speaker ID isn't tagged with multiple conflicting languages
             spk = seg['speaker_id']
             lang = seg['language']
             if spk in language_map and language_map[spk] != lang and lang != "<NA>":
-                self.errors.append(f"Line {line_num}: Language tag consistency error. Speaker '{spk}' was previously tagged as '{language_map[spk]}' but is now '{lang}'.")
+                self.errors.append(self._anomaly(
+                    line_num, "SEVERE",
+                    f"Language tag consistency error. Speaker '{spk}' was previously tagged as '{language_map[spk]}' but is now '{lang}'."
+                ))
             elif lang != "<NA>":
                 language_map[spk] = lang
 
@@ -129,20 +166,29 @@ class RTTMValidator:
             if i > 0:
                 prev_line_num, prev_seg = segments[i-1]
                 
-                # 5. Gaps (Warning if larger than expected, optional)
+                # 5. Gaps (Warning if larger than expected)
                 gap = seg['start'] - prev_seg['end']
-                if gap > 10.0:  # Example threshold: 10 seconds of pure silence
-                    self.warnings.append(f"Between Lines {prev_line_num} and {line_num}: Large gap detected ({gap:.2f}s).")
+                if gap > 10.0:
+                    self.warnings.append(self._anomaly(
+                        line_num, "LOW",
+                        f"Large gap detected ({gap:.2f}s) between Lines {prev_line_num} and {line_num}."
+                    ))
 
                 # 2. Segment overlaps (General overlapping speech)
                 if seg['start'] < prev_seg['end']:
-                    self.warnings.append(f"Between Lines {prev_line_num} and {line_num}: Speakers overlap.")
-                    self.countover+=1
+                    self.warnings.append(self._anomaly(
+                        line_num, "MODERATE",
+                        f"Speakers overlap between Lines {prev_line_num} and {line_num}."
+                    ))
+                    self.countover += 1
 
             # 7. Speaker Duplication (Same speaker overlaps themselves)
             for prev_spk_line, prev_spk_seg in speaker_history[spk]:
                 if prev_spk_seg['end'] > seg['start']:
-                    self.errors.append(f"Between Lines {prev_spk_line} and {line_num}: Speaker duplication. Speaker '{spk}' overlaps themselves.")
+                    self.errors.append(self._anomaly(
+                        line_num, "SEVERE",
+                        f"Speaker duplication. Speaker '{spk}' overlaps themselves between Lines {prev_spk_line} and {line_num}."
+                    ))
             
             speaker_history[spk].append((line_num, seg))
 
@@ -164,38 +210,7 @@ class RTTMValidator:
                     
             if count > self.density_max_segments:
                 line_nums = [str(sorted_segments[k][0]) for k in range(i, i+count)]
-                self.warnings.append(f"Density anomaly: {count} segments found between {window_start}s and {window_end}s (Lines {line_nums[0]} to {line_nums[-1]}).")
-
-# --- Example Usage ---
-if __name__ == "__main__":
-    # Create a dummy RTTM file for testing
-    test_rttm_content = """SPEAKER B007 1 1.789 1.136 <NA> <NA> S1 <NA> <NA>
-SPEAKER B007 1 4.189 2.459 <NA> <NA> S2 <NA> <NA>
-SPEAKER B007 1 6.640 0.159 <NA> <NA> S3 <NA> <NA>
-SPEAKER B007 1 7.438 0.920 <NA> <NA> S2 <NA> <NA>
-SPEAKER B007 1 8.004 0.679 <NA> <NA> S3 <NA> <NA>
-SPEAKER B007 1 10.984 0.229 <NA> <NA> S1 <NA> <NA>
-SPEAKER B007 1 11.924 3.501 <NA> <NA> S3 <NA> <NA>
-SPEAKER B007 1 14.442 5.079 <NA> <NA> S2 <NA> <NA>
-SPEAKER B007 1 19.628 0.797 <NA> <NA> S3 <NA> <NA>
-SPEAKER B007 1 20.272 1.351 <NA> <NA> S2 <NA> <NA>
-"""
-    with open("test.rttm", "w") as f:
-        f.write(test_rttm_content)
-
-    # Initialize and run validator
-    validator = RTTMValidator(audio_duration_map={"file_1": 10.0})
-    results = validator.validate_file("test.rttm")
-
-    print(f"Is Valid: {results['is_valid']}\n")
-    print("ERRORS:")
-
-    for err in results['errors']:
-        print(f" - {err}")
-    print(f"\n - SHORT SEGMENT COUNT :{results['short_segment_count']}")
-        
-    print("\nWARNINGS:")
-    for warn in results['warnings']:
-        print(f" - {warn}")
-    print(f"\n - OVERLAPPING COUNT :{results['overlaped segments']}")
-    
+                self.warnings.append(self._anomaly(
+                    int(line_nums[0]), "MODERATE",
+                    f"Density anomaly: {count} segments found between {window_start}s and {window_end}s (Lines {line_nums[0]} to {line_nums[-1]})."
+                ))

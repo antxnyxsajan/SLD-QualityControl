@@ -2,9 +2,12 @@ import torch
 import collections
 from core_validators import LanguageIdentificationSystem
 
+# Severity thresholds for Language Whisper Confidence
+HIGH_CONFIDENCE_THRESHOLD = 0.80  # Above this = AI is very sure about its prediction
+
 class LanguageValidator:
     def __init__(self):
-        self.errors = []
+        self.anomalies = []
         self.warnings = []
         # Whisper model initialization (large is high accuracy)
         self.language_system = LanguageIdentificationSystem(model_size="large")
@@ -12,16 +15,24 @@ class LanguageValidator:
     def _slice_tensor(self, full_waveform, sample_rate, start_sec, duration_sec):
         """Slices the audio tensor in memory."""
         frame_offset = int(start_sec * sample_rate)
-
-        
         num_frames = int(duration_sec * sample_rate)
         return full_waveform[:, frame_offset:frame_offset + num_frames]
 
+    def _anomaly(self, line, severity, confidence, message):
+        """Constructs a standardized anomaly dictionary."""
+        return {
+            "line": line,
+            "severity": severity,
+            "confidence": confidence,
+            "message": message
+        }
+
     def validate(self, rttm_filepath, audio_filepath, struct_results):
-        self.errors = []
+        self.anomalies = []
         self.warnings = []
         
-        error_lines = [int(err.split(":")[0].replace("Line ", "")) for err in struct_results['errors'] if "Line" in err]
+        # Extract error lines from structural results (now dict-based)
+        error_lines = [err['line'] for err in struct_results['errors'] if isinstance(err, dict) and 'line' in err]
         language_segments = collections.defaultdict(list)
         
         # 1. Parse valid segments
@@ -42,7 +53,7 @@ class LanguageValidator:
         # Load audio
         if not audio_filepath:
             self.warnings.append("No audio file provided for Language Validation.")
-            return {"is_valid": True, "errors": self.errors, "warnings": self.warnings, "score": 100, "accuracy": 1.0, "total_comparisons": 0}
+            return self._build_result(0, 0)
             
         try:
             import soundfile as sf
@@ -53,11 +64,11 @@ class LanguageValidator:
                 full_waveform = torch.from_numpy(waveform_np).T.float()
         except Exception as e:
             self.warnings.append(f"Could not load audio file: {e}")
-            return {"is_valid": True, "errors": self.errors, "warnings": self.warnings, "score": 0, "accuracy": 0.0, "total_comparisons": 0}
+            return self._build_result(0, 0)
 
         from tqdm import tqdm
         
-        # 2. Verify Languages
+        # 2. Verify Languages with Severity Matrix
         total_comparisons = 0
         successful_comparisons = 0
         
@@ -70,9 +81,8 @@ class LanguageValidator:
                     
                 segments.sort(key=lambda x: x['start'])
                 
-                anchor_seg = segments[0]
-                
                 # Combine first few segments until we reach >= 5.0 seconds for a reliable anchor
+                anchor_seg = segments[0]
                 anchor_duration = 0.0
                 anchor_waves = []
                 for seg in segments:
@@ -84,7 +94,7 @@ class LanguageValidator:
                         break
                 
                 if anchor_duration < 1.0:
-                    self.warnings.append(f"Line {anchor_seg['line']}: Combined anchor segment too short ({anchor_duration:.2f}s) for reliable Language ID.")
+                    self.warnings.append(f"Language ID '{lang_id}': Combined anchor segment too short ({anchor_duration:.2f}s) for reliable Language ID.")
                 
                 if anchor_waves:
                     anchor_wave = torch.cat(anchor_waves, dim=1)
@@ -94,7 +104,7 @@ class LanguageValidator:
                 try:
                     anchor_language, anchor_confidence = self.language_system.identify_language(anchor_wave, sample_rate)
                 except Exception as e:
-                    self.warnings.append(f"Could not identify language for Line {anchor_seg['line']}: {e}")
+                    self.warnings.append(f"Could not identify language for anchor of '{lang_id}': {e}")
                     pbar.update(len(segments) - 1)
                     continue
     
@@ -118,23 +128,49 @@ class LanguageValidator:
                             anchor_seg = test_seg
                             anchor_language = test_language
                         else:
-                            self.errors.append(
-                                f"Line {test_seg['line']} (Duration: {test_seg['duration']:.2f}s): Language Mismatch. Expected '{anchor_language}' (from previous valid occurrence at {anchor_seg['start']}s), "
-                                f"but AI detected '{test_language}' (confidence: {test_confidence:.2f})."
-                            )
+                            # --- Severity Matrix (Probability-Based) ---
+                            if test_confidence > HIGH_CONFIDENCE_THRESHOLD:
+                                severity = "SEVERE"
+                                detail = (
+                                    f"AI is {test_confidence:.0%} confident this is '{test_language}', not '{anchor_language}'. "
+                                    f"Likely a human annotation error (wrong language tag)."
+                                )
+                            else:
+                                severity = "MODERATE"
+                                detail = (
+                                    f"AI detected '{test_language}' but with only {test_confidence:.0%} confidence. "
+                                    f"Segment may be code-switched, garbled, or ambiguous. Human tag might be correct."
+                                )
+                            
+                            self.anomalies.append(self._anomaly(
+                                line=test_seg['line'],
+                                severity=severity,
+                                confidence=test_confidence,
+                                message=(
+                                    f"Language Mismatch for ID '{lang_id}'. Expected '{anchor_language}' "
+                                    f"(from previous valid occurrence at {anchor_seg['start']}s). {detail}"
+                                )
+                            ))
                     except Exception as e:
-                        self.errors.append(f"Line {test_seg['line']}: Language identification failed: {e}")
+                        self.anomalies.append(self._anomaly(
+                            line=test_seg['line'],
+                            severity="MODERATE",
+                            confidence=None,
+                            message=f"Language identification failed: {e}"
+                        ))
                     
                     pbar.update(1)
 
-        accuracy = successful_comparisons / total_comparisons if total_comparisons > 0 else 1.0
-        score = int(accuracy * 100)
+        return self._build_result(total_comparisons, successful_comparisons)
+
+    def _build_result(self, total_comparisons, successful_comparisons):
+        agreement_rate = successful_comparisons / total_comparisons if total_comparisons > 0 else 1.0
 
         return {
-            "is_valid": len(self.errors) == 0,
-            "errors": self.errors,
+            "anomalies": self.anomalies,
             "warnings": self.warnings,
-            "accuracy": accuracy,
-            "score": score,
-            "total_comparisons": total_comparisons
+            "agreement_rate": agreement_rate,
+            "total_comparisons": total_comparisons,
+            "severe_count": sum(1 for a in self.anomalies if a['severity'] == 'SEVERE'),
+            "moderate_count": sum(1 for a in self.anomalies if a['severity'] == 'MODERATE'),
         }

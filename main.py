@@ -5,85 +5,153 @@ structural_module = import_module('step1_structuralValidator')
 acoustic_module = import_module('step2_acousticValidator')
 language_module = import_module('step3_languageValidator')
 
+# Passing threshold for the dataset (95% agreement required)
+PASSING_THRESHOLD = 95.0
+
 def run_pipeline(rttm_filepath, audio_filepath=None, rttml_filepath=None):
-    print(f"--- Starting Quality Control Pipeline ---")
+    print(f"--- Starting Ground Truth QA Auditor ---")
     
     rttm_validator = structural_module.RTTMValidator()
 
-    # --- 1. Structural Validation (Speaker RTTM) ---
+    # =============================================
+    # STEP 1.1: Structural Validation (Speaker RTTM)
+    # =============================================
     print("\n[1.1] Running Structural Validation (Speaker RTTM)...")
     print(f"File: {rttm_filepath}")
     struct_results = rttm_validator.validate_file(rttm_filepath)
     
-    print(f"Structural Validation Passed: {struct_results['is_valid']}")
+    print(f"Structural Integrity: {'PASSED' if struct_results['is_valid'] else 'ISSUES FOUND'}")
     print(f"Structural Score: {struct_results['score']}/100")
     if struct_results['errors']:
         for err in struct_results['errors']:
-            print(f"  - {err}")
+            print(f"  Line {err['line']} [{err['severity']}]: {err['message']}")
     if struct_results['warnings']:
         for warn in struct_results['warnings']:
-            print(f"  - {warn}")
+            print(f"  Line {warn['line']} [{warn['severity']}]: {warn['message']}")
 
-    # --- Structural Validation (Language RTTM) ---
+    # =============================================
+    # STEP 1.2: Structural Validation (Language RTTM)
+    # =============================================
     structr_results = None
     if rttml_filepath:
         print("\n[1.2] Running Structural Validation (Language RTTM)...")
-        structr_results = rttm_validator.validate_file(rttml_filepath)
-        print(f"Structural Validation Passed: {structr_results['is_valid']}")
+        print(f"File: {rttml_filepath}")
+        rttm_validator_lang = structural_module.RTTMValidator()
+        structr_results = rttm_validator_lang.validate_file(rttml_filepath)
+        print(f"Structural Integrity: {'PASSED' if structr_results['is_valid'] else 'ISSUES FOUND'}")
         print(f"Structural Score: {structr_results['score']}/100")
         if structr_results['errors']:
             for err in structr_results['errors']:
-                print(f"  - {err}")
+                print(f"  Line {err['line']} [{err['severity']}]: {err['message']}")
+        if structr_results['warnings']:
+            for warn in structr_results['warnings']:
+                print(f"  Line {warn['line']} [{warn['severity']}]: {warn['message']}")
 
-    # --- 2. Acoustic Validation ---
+    # =============================================
+    # STEP 2: Speaker Diarization Validation
+    # =============================================
     print("\n[2] Running Speaker Diarization Validation...")
     acoustic_validator = acoustic_module.AcousticValidator()
     acoustic_results = acoustic_validator.validate(rttm_filepath, audio_filepath, struct_results)
     
-    print(f"Speaker Validation Passed: {acoustic_results['is_valid']}")
-    print(f"Speaker Accuracy Score: {acoustic_results['score']}/100 ({acoustic_results['accuracy']:.2%} over {acoustic_results.get('total_comparisons', 0)} comparisons)")
-    print(f"Average Confidence (Cosine Similarity): {acoustic_results.get('avg_confidence', 0.0):.2f}")
-    if acoustic_results['errors']:
-        for err in acoustic_results['errors']:
-            print(f"  - {err}")
+    spk_agreement = acoustic_results['agreement_rate']
+    print(f"Speaker Annotation Credibility: {spk_agreement:.2%} Agreement ({acoustic_results['total_comparisons']} comparisons)")
+    print(f"Average Cosine Similarity: {acoustic_results['avg_confidence']:.4f}")
+    print(f"Anomalies: {acoustic_results['severe_count']} SEVERE | {acoustic_results['moderate_count']} MODERATE")
+    if acoustic_results.get('warnings'):
+        for warn in acoustic_results['warnings']:
+            print(f"  [WARNING] {warn}")
 
-    # --- 3. Language Validation ---
+    # =============================================
+    # STEP 3: Language Diarization Validation
+    # =============================================
     lang_results = None
     if rttml_filepath:
         print("\n[3] Running Language Diarization Validation...")
         language_validator = language_module.LanguageValidator()
         lang_results = language_validator.validate(rttml_filepath, audio_filepath, structr_results)
         
-        print(f"Language Validation Passed: {lang_results['is_valid']}")
-        print(f"Language Accuracy Score: {lang_results['score']}/100 ({lang_results['accuracy']:.2%} over {lang_results.get('total_comparisons', 0)} comparisons)")
-        if lang_results['errors']:
-            for err in lang_results['errors']:
-                print(f"  - {err}")
+        lang_agreement = lang_results['agreement_rate']
+        print(f"Language Annotation Credibility: {lang_agreement:.2%} Agreement ({lang_results['total_comparisons']} comparisons)")
+        print(f"Anomalies: {lang_results['severe_count']} SEVERE | {lang_results['moderate_count']} MODERATE")
+        if lang_results.get('warnings'):
+            for warn in lang_results['warnings']:
+                print(f"  [WARNING] {warn}")
+
+    # =============================================
+    # FINAL QA AUDIT REPORT
+    # =============================================
+    print("\n" + "=" * 60)
+    print("GROUND TRUTH QA AUDIT REPORT")
+    print("=" * 60)
     
-    # --- Final Scoring ---
-    print("\n==================================================")
-    print("FINAL QUALITY EVALUATION REPORT")
-    print("==================================================")
+    # --- Speaker RTTM Report ---
+    print("\nSPEAKER RTTM QUALITY")
+    print(f"  Structural Score:         {struct_results['score']}/100")
+    print(f"  Annotation Agreement:     {spk_agreement:.2%}")
+    print(f"  Severe Anomalies:         {acoustic_results['severe_count']}")
+    print(f"  Moderate Anomalies:       {acoustic_results['moderate_count']}")
     
-    print("SPEAKER RTTM QUALITY")
-    print(f" - Structural Score: {struct_results['score']}/100")
-    print(f" - Validation Accuracy: {acoustic_results['score']}/100")
-    speaker_overall = (struct_results['score'] + acoustic_results['score']) / 2
-    print(f" -> OVERALL SPEAKER QUALITY: {speaker_overall:.1f}/100")
+    # Chronological sorted SEVERE anomalies only
+    spk_severe = sorted(
+        [a for a in acoustic_results['anomalies'] if a['severity'] == 'SEVERE'],
+        key=lambda x: x['line']
+    )
+    if spk_severe:
+        print("\n  SEVERE ISSUES (Requires Manual Review):")
+        for a in spk_severe:
+            print(f"    Line {a['line']}: {a['message']}")
+            
+    # Chronological sorted MODERATE anomalies
+    spk_moderate = sorted(
+        [a for a in acoustic_results['anomalies'] if a['severity'] == 'MODERATE'],
+        key=lambda x: x['line']
+    )
+    if spk_moderate:
+        print("\n  MODERATE ISSUES (Warnings / Edge Cases):")
+        for a in spk_moderate:
+            print(f"    Line {a['line']}: {a['message']}")
     
+    spk_pass = spk_agreement * 100 >= PASSING_THRESHOLD
+    print(f"\n  STATUS: {'PASSED ✓' if spk_pass else 'FAILED ✗ — Manual review required before use in training.'}")
+    
+    # --- Language RTTM Report ---
     if rttml_filepath and lang_results:
-        print("\n--------------------------------------------------")
-        print("LANGUAGE RTTM QUALITY")
-        print(f" - Structural Score: {structr_results['score']}/100")
-        print(f" - Validation Accuracy: {lang_results['score']}/100")
-        lang_overall = (structr_results['score'] + lang_results['score']) / 2
-        print(f" -> OVERALL LANGUAGE QUALITY: {lang_overall:.1f}/100")
+        print("\n" + "-" * 60)
+        print("\nLANGUAGE RTTM QUALITY")
+        print(f"  Structural Score:         {structr_results['score']}/100")
+        print(f"  Annotation Agreement:     {lang_agreement:.2%}")
+        print(f"  Severe Anomalies:         {lang_results['severe_count']}")
+        print(f"  Moderate Anomalies:       {lang_results['moderate_count']}")
         
-    print("==================================================")
+        # Chronological sorted SEVERE anomalies only
+        lang_severe = sorted(
+            [a for a in lang_results['anomalies'] if a['severity'] == 'SEVERE'],
+            key=lambda x: x['line']
+        )
+        if lang_severe:
+            print("\n  SEVERE ISSUES (Requires Manual Review):")
+            for a in lang_severe:
+                print(f"    Line {a['line']}: {a['message']}")
+                
+        # Chronological sorted MODERATE anomalies
+        lang_moderate = sorted(
+            [a for a in lang_results['anomalies'] if a['severity'] == 'MODERATE'],
+            key=lambda x: x['line']
+        )
+        if lang_moderate:
+            print("\n  MODERATE ISSUES (Warnings / Edge Cases):")
+            for a in lang_moderate:
+                print(f"    Line {a['line']}: {a['message']}")
+        
+        lang_pass = lang_agreement * 100 >= PASSING_THRESHOLD
+        print(f"\n  STATUS: {'PASSED ✓' if lang_pass else 'FAILED ✗ — Manual review required before use in training.'}")
+    
+    print("\n" + "=" * 60)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Quality Control Pipeline for RTTM and Audio files.")
-    parser.add_argument("--rttm", type=str, default="test.rttm", help="Path to the Speaker RTTM file.")
+    parser = argparse.ArgumentParser(description="Ground Truth QA Auditor for RTTM and Audio files.")
+    parser.add_argument("--rttm", type=str, required=True, help="Path to the Speaker RTTM file.")
     parser.add_argument("--rttml", type=str, default=None, help="Path to the Language RTTM file (optional).")
     parser.add_argument("--audio", type=str, default=None, help="Path to the Audio WAV file (optional).")
     

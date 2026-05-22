@@ -2,22 +2,36 @@ import torch
 import collections
 from core_validators import SpeakerVerificationSystem
 
+# Severity thresholds for Speaker Cosine Similarity
+SEVERE_THRESHOLD = 0.10   # Below this = AI is certain it's a different person
+PASSING_THRESHOLD = 0.25  # At or above this = match
+
 class AcousticValidator:
     def __init__(self):
-        self.errors = []
+        self.anomalies = []
         self.warnings = []
-        self.verifier_system = SpeakerVerificationSystem(similarity_threshold=0.25)
+        self.verifier_system = SpeakerVerificationSystem(similarity_threshold=PASSING_THRESHOLD)
         
     def _slice_tensor(self, full_waveform, sample_rate, start_sec, duration_sec):
         frame_offset = int(start_sec * sample_rate)
         num_frames = int(duration_sec * sample_rate)
         return full_waveform[:, frame_offset:frame_offset + num_frames]
 
+    def _anomaly(self, line, severity, confidence, message):
+        """Constructs a standardized anomaly dictionary."""
+        return {
+            "line": line,
+            "severity": severity,
+            "confidence": confidence,
+            "message": message
+        }
+
     def validate(self, rttm_filepath, audio_filepath, struct_results):
-        self.errors = []
+        self.anomalies = []
         self.warnings = []
         
-        error_lines = [int(err.split(":")[0].replace("Line ", "")) for err in struct_results['errors'] if "Line" in err]
+        # Extract error lines from structural results (now dict-based)
+        error_lines = [err['line'] for err in struct_results['errors'] if isinstance(err, dict) and 'line' in err]
         speaker_segments = collections.defaultdict(list)
         
         # 1. Parse valid segments
@@ -38,7 +52,7 @@ class AcousticValidator:
         # Load audio file entirely into memory once to avoid disk I/O bottlenecks
         if not audio_filepath:
             self.warnings.append("No audio file provided for Speaker Validation.")
-            return {"is_valid": True, "errors": self.errors, "warnings": self.warnings, "score": 100, "accuracy": 1.0}
+            return self._build_result(0, 0, 0.0)
             
         try:
             import soundfile as sf
@@ -49,11 +63,11 @@ class AcousticValidator:
                 full_waveform = torch.from_numpy(waveform_np).T.float()
         except Exception as e:
             self.warnings.append(f"Could not load audio file '{audio_filepath}': {e}")
-            return {"is_valid": True, "errors": self.errors, "warnings": self.warnings, "score": 0, "accuracy": 0.0}
+            return self._build_result(0, 0, 0.0)
 
         from tqdm import tqdm
         
-        # 2. Verify Speakers
+        # 2. Verify Speakers with Severity Matrix
         total_comparisons = 0
         successful_comparisons = 0
         total_similarity = 0.0
@@ -93,21 +107,38 @@ class AcousticValidator:
                         anchor_seg = test_seg
                         anchor_wave = test_wave
                     else:
-                        self.errors.append(f"Line {test_seg['line']} (Duration: {test_seg['duration']:.2f}s): Voice mismatch for Speaker {speaker_id}. "
-                                           f"Does not match previous valid occurrence at {anchor_seg['start']}s. "
-                                           f"(Similarity: {sim_score:.2f})")
+                        # --- Severity Matrix ---
+                        if sim_score < SEVERE_THRESHOLD:
+                            severity = "SEVERE"
+                            detail = "AI is mathematically certain a different human is speaking."
+                        else:
+                            severity = "MODERATE"
+                            detail = "AI suspects a mismatch, but could be due to noise, cough, or cross-talk."
+                        
+                        self.anomalies.append(self._anomaly(
+                            line=test_seg['line'],
+                            severity=severity,
+                            confidence=sim_score,
+                            message=(
+                                f"Voice mismatch for Speaker {speaker_id}. "
+                                f"Does not match previous valid occurrence at {anchor_seg['start']}s. "
+                                f"(Cosine Similarity: {sim_score:.4f}). {detail}"
+                            )
+                        ))
                     pbar.update(1)
 
-        accuracy = successful_comparisons / total_comparisons if total_comparisons > 0 else 1.0
-        avg_confidence = total_similarity / total_comparisons if total_comparisons > 0 else 1.0
-        score = int(accuracy * 100)
+        return self._build_result(total_comparisons, successful_comparisons, total_similarity)
+
+    def _build_result(self, total_comparisons, successful_comparisons, total_similarity):
+        agreement_rate = successful_comparisons / total_comparisons if total_comparisons > 0 else 1.0
+        avg_confidence = total_similarity / total_comparisons if total_comparisons > 0 else 0.0
 
         return {
-            "is_valid": len(self.errors) == 0,
-            "errors": self.errors,
+            "anomalies": self.anomalies,
             "warnings": self.warnings,
-            "accuracy": accuracy,
+            "agreement_rate": agreement_rate,
             "avg_confidence": avg_confidence,
-            "score": score,
-            "total_comparisons": total_comparisons
+            "total_comparisons": total_comparisons,
+            "severe_count": sum(1 for a in self.anomalies if a['severity'] == 'SEVERE'),
+            "moderate_count": sum(1 for a in self.anomalies if a['severity'] == 'MODERATE'),
         }
