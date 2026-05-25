@@ -32,7 +32,7 @@ class LanguageValidator:
         self.warnings = []
         
         # Extract error lines from structural results (now dict-based)
-        error_lines = [err['line'] for err in struct_results['errors'] if isinstance(err, dict) and 'line' in err]
+        error_lines = set(err['line'] for err in struct_results['errors'] if isinstance(err, dict) and 'line' in err)
         language_segments = collections.defaultdict(list)
         
         # 1. Parse valid segments

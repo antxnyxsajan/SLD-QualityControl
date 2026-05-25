@@ -135,9 +135,9 @@ class RTTMValidator:
 
         # 9. Extremely short segments
         if 0 < seg['duration'] < self.short_segment_threshold:
-            self.warnings.append(self._anomaly(
-                line_num, "LOW",
-                f"Extremely short segment detected ({seg['duration']}s)."
+            self.errors.append(self._anomaly(
+                line_num, "MODERATE",
+                f"Extremely short segment detected ({seg['duration']}s). Skipped in acoustic/language validation."
             ))
             self.count += 1
 
