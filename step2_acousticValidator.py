@@ -133,12 +133,20 @@ class AcousticValidator:
         agreement_rate = successful_comparisons / total_comparisons if total_comparisons > 0 else 1.0
         avg_confidence = total_similarity / total_comparisons if total_comparisons > 0 else 0.0
 
+        # F1 Score: All comparisons are within the same speaker ID (ground truth = positive).
+        # TP = AI correctly confirms a match, FN = AI flags a mismatch, FP = 0 by design.
+        # F1 = 2*TP / (2*TP + FP + FN) => 2*TP / (2*TP + FN)
+        tp = successful_comparisons
+        fn = total_comparisons - successful_comparisons
+        f1_score = (2 * tp) / (2 * tp + fn) if (2 * tp + fn) > 0 else 1.0
+
         return {
             "anomalies": self.anomalies,
             "warnings": self.warnings,
             "agreement_rate": agreement_rate,
             "avg_confidence": avg_confidence,
             "total_comparisons": total_comparisons,
+            "f1_score": f1_score,
             "severe_count": sum(1 for a in self.anomalies if a['severity'] == 'SEVERE'),
             "moderate_count": sum(1 for a in self.anomalies if a['severity'] == 'MODERATE'),
         }

@@ -57,6 +57,7 @@ def run_pipeline(rttm_filepath, audio_filepath=None, rttml_filepath=None):
     spk_agreement = acoustic_results['agreement_rate']
     print(f"Speaker Annotation Credibility: {spk_agreement:.2%} Agreement ({acoustic_results['total_comparisons']} comparisons)")
     print(f"Average Cosine Similarity: {acoustic_results['avg_confidence']:.4f}")
+    print(f"F1 Score: {acoustic_results['f1_score']:.4f}")
     print(f"Anomalies: {acoustic_results['severe_count']} SEVERE | {acoustic_results['moderate_count']} MODERATE")
     if acoustic_results.get('warnings'):
         for warn in acoustic_results['warnings']:
@@ -73,6 +74,7 @@ def run_pipeline(rttm_filepath, audio_filepath=None, rttml_filepath=None):
         
         lang_agreement = lang_results['agreement_rate']
         print(f"Language Annotation Credibility: {lang_agreement:.2%} Agreement ({lang_results['total_comparisons']} comparisons)")
+        print(f"F1 Score: {lang_results['f1_score']:.4f}")
         print(f"Anomalies: {lang_results['severe_count']} SEVERE | {lang_results['moderate_count']} MODERATE")
         if lang_results.get('warnings'):
             for warn in lang_results['warnings']:
@@ -89,6 +91,7 @@ def run_pipeline(rttm_filepath, audio_filepath=None, rttml_filepath=None):
     print("\nSPEAKER RTTM QUALITY")
     print(f"  Structural Score:         {struct_results['score']}/100")
     print(f"  Annotation Agreement:     {spk_agreement:.2%}")
+    print(f"  F1 Score:                 {acoustic_results['f1_score']:.4f}")
     print(f"  Severe Anomalies:         {acoustic_results['severe_count']}")
     print(f"  Moderate Anomalies:       {acoustic_results['moderate_count']}")
     
@@ -121,6 +124,7 @@ def run_pipeline(rttm_filepath, audio_filepath=None, rttml_filepath=None):
         print("\nLANGUAGE RTTM QUALITY")
         print(f"  Structural Score:         {structr_results['score']}/100")
         print(f"  Annotation Agreement:     {lang_agreement:.2%}")
+        print(f"  F1 Score:                 {lang_results['f1_score']:.4f}")
         print(f"  Severe Anomalies:         {lang_results['severe_count']}")
         print(f"  Moderate Anomalies:       {lang_results['moderate_count']}")
         
