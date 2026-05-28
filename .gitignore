@@ -1,3 +1,14 @@
 __pycache__/
 *.pyc
 pretrained_models/
+./LID Model - shubham/confphone/features/
+
+# LID Model Training Artifacts
+*.npy
+*.ckpt
+*.log
+trial_*.txt
+score_*.txt
+eer_*.txt
+train.txt
+test.txt
