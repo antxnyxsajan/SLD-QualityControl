@@ -3,7 +3,7 @@ import collections
 from core_validators import LanguageIdentificationSystem
 
 # Severity thresholds for Language Whisper Confidence
-HIGH_CONFIDENCE_THRESHOLD = 0.80  # Above this = AI is very sure about its prediction
+HIGH_CONFIDENCE_THRESHOLD = 0.75  # Above this = AI is very sure about its prediction
 
 class LanguageValidator:
     def __init__(self):
