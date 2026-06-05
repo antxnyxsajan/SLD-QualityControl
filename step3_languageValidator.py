@@ -1,184 +1,146 @@
+import sys
+import os
 import torch
-import collections
-from core_validators import LanguageIdentificationSystem
+import torchaudio
+import numpy as np
+from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2ForCTC
 
-# Severity thresholds for Language Whisper Confidence
-HIGH_CONFIDENCE_THRESHOLD = 0.75  # Above this = AI is very sure about its prediction
+# Add the confphone folder to sys.path so we can import the model
+sys.path.append(os.path.join(os.path.dirname(__file__), "LID", "confphone"))
 
-class LanguageValidator:
-    def __init__(self):
-        self.anomalies = []
-        self.warnings = []
-        # Whisper model initialization (large is high accuracy)
-        self.language_system = LanguageIdentificationSystem(model_size="large")
+from model import Conformer
+from data_load import get_atten_mask
 
-    def _slice_tensor(self, full_waveform, sample_rate, start_sec, duration_sec):
-        """Slices the audio tensor in memory."""
-        frame_offset = int(start_sec * sample_rate)
-        num_frames = int(duration_sec * sample_rate)
-        return full_waveform[:, frame_offset:frame_offset + num_frames]
+# ---------- Language code → integer label mapping ----------
+LANG_MAP = {
+    0: "asm (Assamese)",
+    1: "ben (Bengali)",
+    2: "eng (English)",
+    3: "guj (Gujarati)",
+    4: "hin (Hindi)",
+    5: "kan (Kannada)",
+    6: "mal (Malayalam)",
+    7: "mar (Marathi)",
+    8: "odi (Odia)",
+    9: "pun (Punjabi)",
+    10: "tam (Tamil)",
+    11: "tel (Telugu)",
+}
 
-    def _anomaly(self, line, severity, confidence, message):
-        """Constructs a standardized anomaly dictionary."""
-        return {
-            "line": line,
-            "severity": severity,
-            "confidence": confidence,
-            "message": message
-        }
+TARGET_SAMPLE_RATE = 16000
+TARGET_FEATURE_DIM = 392
 
-    def validate(self, rttm_filepath, audio_filepath, struct_results):
-        self.anomalies = []
-        self.warnings = []
-        
-        # Extract error lines from structural results (now dict-based)
-        error_lines = set(err['line'] for err in struct_results['errors'] if isinstance(err, dict) and 'line' in err)
-        language_segments = collections.defaultdict(list)
-        
-        # 1. Parse valid segments
-        with open(rttm_filepath, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
-                if line_num in error_lines:
-                    continue 
-                
-                parts = line.strip().split()
-                if len(parts) >= 8 and parts[0] == "LANGUAGE":
-                    lang_id = parts[7] # e.g., L1, L2
-                    start = float(parts[3])
-                    duration = float(parts[4])
-                    language_segments[lang_id].append({
-                        "line": line_num, "start": start, "duration": duration
-                    })
+def load_wav2vec2(device):
+    print("[INFO] Loading Wav2Vec2 Feature Extractor...")
+    model_name = "facebook/wav2vec2-lv-60-espeak-cv-ft"
+    processor = Wav2Vec2FeatureExtractor.from_pretrained(model_name)
+    model = Wav2Vec2ForCTC.from_pretrained(model_name).to(device).eval()
+    return processor, model
 
-        # Load audio
-        if not audio_filepath:
-            self.warnings.append("No audio file provided for Language Validation.")
-            return self._build_result(0, 0)
-            
-        try:
-            import soundfile as sf
-            waveform_np, sample_rate = sf.read(audio_filepath)
-            if len(waveform_np.shape) == 1: 
-                full_waveform = torch.from_numpy(waveform_np).unsqueeze(0).float()
-            else: 
-                full_waveform = torch.from_numpy(waveform_np).T.float()
-        except Exception as e:
-            self.warnings.append(f"Could not load audio file: {e}")
-            return self._build_result(0, 0)
+def load_conformer(ckpt_path, device):
+    print(f"[INFO] Loading trained Conformer from {ckpt_path}...")
+    model = Conformer(
+        input_dim=392,
+        feat_dim=32,
+        d_k=32,
+        d_v=32,
+        n_heads=4,
+        d_ff=1024,
+        max_len=100000,
+        dropout=0.1,
+        device=device,
+        n_lang=12
+    )
+    # Load weights
+    model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True))
+    model.to(device).eval()
+    return model
 
-        from tqdm import tqdm
-        
-        # 2. Verify Languages with Severity Matrix
-        total_comparisons = 0
-        successful_comparisons = 0
-        
-        total_test_segments = sum(len(segs) - 1 for segs in language_segments.values() if len(segs) >= 2)
-        
-        with tqdm(total=total_test_segments, desc="Validating Language Segments") as pbar:
-            for lang_id, segments in language_segments.items():
-                if len(segments) < 2:
-                    continue 
-                    
-                segments.sort(key=lambda x: x['start'])
-                
-                # Combine first few segments until we reach >= 5.0 seconds for a reliable anchor
-                anchor_seg = segments[0]
-                anchor_duration = 0.0
-                anchor_waves = []
-                for seg in segments:
-                    wave = self._slice_tensor(full_waveform, sample_rate, seg['start'], seg['duration'])
-                    if wave.size(1) > 0:
-                        anchor_waves.append(wave)
-                        anchor_duration += seg['duration']
-                    if anchor_duration >= 5.0:
-                        break
-                
-                if anchor_duration < 1.0:
-                    self.warnings.append(f"Language ID '{lang_id}': Combined anchor segment too short ({anchor_duration:.2f}s) for reliable Language ID.")
-                
-                if anchor_waves:
-                    anchor_wave = torch.cat(anchor_waves, dim=1)
-                else:
-                    anchor_wave = self._slice_tensor(full_waveform, sample_rate, anchor_seg['start'], anchor_seg['duration'])
-                
-                try:
-                    anchor_language, anchor_confidence = self.language_system.identify_language(anchor_wave, sample_rate)
-                except Exception as e:
-                    self.warnings.append(f"Could not identify language for anchor of '{lang_id}': {e}")
-                    pbar.update(len(segments) - 1)
-                    continue
+def extract_features(audio_path, processor, w2v_model, device):
+    waveform, sr = torchaudio.load(audio_path)
     
-                for test_seg in segments[1:]:
-                    if test_seg['duration'] < 1.0:
-                        self.warnings.append(f"Line {test_seg['line']}: Test segment too short ({test_seg['duration']}s).")
-                        
-                    test_wave = self._slice_tensor(full_waveform, sample_rate, test_seg['start'], test_seg['duration'])
-                    if test_wave.size(1) == 0:
-                        pbar.update(1)
-                        continue
-                        
-                    total_comparisons += 1
-                    
-                    try:
-                        test_language, test_confidence = self.language_system.identify_language(test_wave, sample_rate)
-                        
-                        if test_language == anchor_language:
-                            successful_comparisons += 1
-                            # Dynamic Anchoring: Update anchor to this successful match
-                            anchor_seg = test_seg
-                            anchor_language = test_language
-                        else:
-                            # --- Severity Matrix (Probability-Based) ---
-                            if test_confidence > HIGH_CONFIDENCE_THRESHOLD:
-                                severity = "SEVERE"
-                                detail = (
-                                    f"AI is {test_confidence:.0%} confident this is '{test_language}', not '{anchor_language}'. "
-                                    f"Likely a human annotation error (wrong language tag)."
-                                )
-                            else:
-                                severity = "MODERATE"
-                                detail = (
-                                    f"AI detected '{test_language}' but with only {test_confidence:.0%} confidence. "
-                                    f"Segment may be code-switched, garbled, or ambiguous. Human tag might be correct."
-                                )
-                            
-                            self.anomalies.append(self._anomaly(
-                                line=test_seg['line'],
-                                severity=severity,
-                                confidence=test_confidence,
-                                message=(
-                                    f"Language Mismatch for ID '{lang_id}'. Expected '{anchor_language}' "
-                                    f"(from previous valid occurrence at {anchor_seg['start']}s). {detail}"
-                                )
-                            ))
-                    except Exception as e:
-                        self.anomalies.append(self._anomaly(
-                            line=test_seg['line'],
-                            severity="MODERATE",
-                            confidence=None,
-                            message=f"Language identification failed: {e}"
-                        ))
-                    
-                    pbar.update(1)
+    # Convert to mono if stereo
+    if waveform.shape[0] > 1:
+        waveform = waveform.mean(dim=0, keepdim=True)
+        
+    # Resample
+    if sr != TARGET_SAMPLE_RATE:
+        resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=TARGET_SAMPLE_RATE)
+        waveform = resampler(waveform)
+        
+    waveform = waveform.squeeze(0)
+    
+    # [CRITICAL OOM FIX] 
+    # Conformer's attention mechanism uses O(T^2) memory. 
+    # We must trim audio to max 10 seconds to avoid blowing up the GPU.
+    max_length_samples = TARGET_SAMPLE_RATE * 60  # 10 seconds
+    if waveform.shape[0] > max_length_samples:
+        print(f"[WARNING] Audio is very long! Trimming to first 10 seconds to prevent GPU OOM.")
+        waveform = waveform[:max_length_samples]
+    
+    # Extract features
+    inputs = processor(waveform.numpy(), sampling_rate=TARGET_SAMPLE_RATE, return_tensors="pt", padding=True)
+    input_values = inputs.input_values.to(device)
+    
+    with torch.no_grad():
+        logits = w2v_model(input_values).logits
+        
+    posteriors = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
+    
+    # Adjust to exactly 392 dimensions
+    vocab_size = posteriors.shape[1]
+    if vocab_size > TARGET_FEATURE_DIM:
+        posteriors = posteriors[:, :TARGET_FEATURE_DIM]
+    elif vocab_size < TARGET_FEATURE_DIM:
+        padding = np.zeros((posteriors.shape[0], TARGET_FEATURE_DIM - vocab_size), dtype=posteriors.dtype)
+        posteriors = np.concatenate([posteriors, padding], axis=1)
+        
+    # Return as tensor with batch dim (1, T, 392)
+    posteriors = torch.tensor(posteriors).unsqueeze(0).to(device, dtype=torch.float)
+    return posteriors
 
-        return self._build_result(total_comparisons, successful_comparisons)
+def test_model(audio_path):
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
+    ckpt_path = os.path.join(os.path.dirname(__file__), "LID", "confphone", "TransformerconfPhone_iv79.ckpt")
+    if not os.path.exists(ckpt_path):
+        print(f"[ERROR] Checkpoint not found at {ckpt_path}")
+        return
+        
+    w2v_processor, w2v_model = load_wav2vec2(device)
+    conformer_model = load_conformer(ckpt_path, device)
+    
+    print(f"\n[INFO] Processing audio file: {audio_path}")
+    features = extract_features(audio_path, w2v_processor, w2v_model, device)
+    
+    # sequence length is the time dimension (dim 1)
+    seq_len = [features.size(1)]
+    atten_mask = get_atten_mask(seq_len, features.size(0)).to(device)
+    
+    with torch.no_grad():
+        outputs = conformer_model(features, atten_mask)
+        probs = torch.softmax(outputs, dim=-1).squeeze(0)
+        
+    # Get top 3 predictions
+    top_probs, top_indices = torch.topk(probs, 3)
+    
+    print("\n" + "="*50)
+    print("🎯 PREDICTION RESULTS")
+    print("="*50)
+    
+    for i in range(3):
+        lang_idx = top_indices[i].item()
+        prob = top_probs[i].item()
+        lang_name = LANG_MAP.get(lang_idx, "Unknown")
+        print(f"#{i+1}: {lang_name.ljust(20)} | Confidence: {prob*100:.2f}%")
+        
+    print("="*50 + "\n")
 
-    def _build_result(self, total_comparisons, successful_comparisons):
-        agreement_rate = successful_comparisons / total_comparisons if total_comparisons > 0 else 1.0
-
-        # F1 Score: All comparisons are within the same language ID (ground truth = positive).
-        # TP = AI correctly confirms a match, FN = AI flags a mismatch, FP = 0 by design.
-        # F1 = 2*TP / (2*TP + FP + FN) => 2*TP / (2*TP + FN)
-        tp = successful_comparisons
-        fn = total_comparisons - successful_comparisons
-        f1_score = (2 * tp) / (2 * tp + fn) if (2 * tp + fn) > 0 else 1.0
-
-        return {
-            "anomalies": self.anomalies,
-            "warnings": self.warnings,
-            "agreement_rate": agreement_rate,
-            "total_comparisons": total_comparisons,
-            "f1_score": f1_score,
-            "severe_count": sum(1 for a in self.anomalies if a['severity'] == 'SEVERE'),
-            "moderate_count": sum(1 for a in self.anomalies if a['severity'] == 'MODERATE'),
-        }
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Test trained LID model on an audio file")
+    parser.add_argument("audio_path", type=str, help="Path to .wav file to test")
+    args = parser.parse_args()
+    
+    test_model(args.audio_path)

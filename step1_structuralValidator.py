@@ -175,11 +175,9 @@ class RTTMValidator:
                     ))
 
                 # 2. Segment overlaps (General overlapping speech)
+                # Cross-speaker overlaps are normal in real conversations (interruptions, backchannels).
+                # We count them for informational purposes only but do NOT penalize the score.
                 if seg['start'] < prev_seg['end']:
-                    self.warnings.append(self._anomaly(
-                        line_num, "MODERATE",
-                        f"Speakers overlap between Lines {prev_line_num} and {line_num}."
-                    ))
                     self.countover += 1
 
             # 7. Speaker Duplication (Same speaker overlaps themselves)
