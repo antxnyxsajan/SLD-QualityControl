@@ -60,8 +60,8 @@ class _FineTuneWhisperEncoder(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.config = WhisperConfig.from_pretrained(_FT_MODEL_NAME)
-        self.whisper = WhisperModel.from_pretrained(_FT_MODEL_NAME)
+        self.config = WhisperConfig.from_pretrained(_FT_MODEL_NAME, local_files_only=True)
+        self.whisper = WhisperModel.from_pretrained(_FT_MODEL_NAME, local_files_only=True)
         for p in self.whisper.parameters():
             p.requires_grad = False
         for layer in self.whisper.encoder.layers[-_FT_NUM_UNFROZEN_LAYERS:]:
@@ -101,7 +101,7 @@ class LanguageIdentificationSystem:
         self.model.eval()
 
         # Processor for feature extraction (same as training)
-        self.processor = WhisperProcessor.from_pretrained(_FT_MODEL_NAME)
+        self.processor = WhisperProcessor.from_pretrained(_FT_MODEL_NAME, local_files_only=True)
 
         print(f"  Checkpoint : {_checkpoint}")
         print(f"  Device     : {self.device}")
@@ -155,6 +155,55 @@ class LanguageIdentificationSystem:
         detected_lang = _FT_LABEL_CLASSES[class_idx]
 
         return detected_lang, confidence
+
+    def identify_language_with_gap(self, audio_tensor, current_sample_rate):
+        """
+        Like identify_language() but also returns the confidence gap (top-1 minus top-2
+        softmax probability). A small gap signals that the model is genuinely uncertain
+        between two languages — a reliable indicator of mixed-language (code-switched) audio.
+
+        Returns (language_code, top1_confidence, confidence_gap).
+        """
+        # ── Preprocessing (identical to identify_language) ───────────────────────
+        if audio_tensor.dim() > 1:
+            audio_tensor = audio_tensor.mean(dim=0)
+
+        if current_sample_rate != _TARGET_SR:
+            if not hasattr(self, "_resampler") or self._resampler_orig_freq != current_sample_rate:
+                self._resampler = torchaudio.transforms.Resample(current_sample_rate, _TARGET_SR)
+                self._resampler_orig_freq = current_sample_rate
+            audio_tensor = self._resampler(audio_tensor)
+
+        audio_np = audio_tensor.numpy()
+        inputs = self.processor(
+            [audio_np],
+            sampling_rate=_TARGET_SR,
+            return_tensors="pt",
+            padding="longest",
+            truncation=True,
+        )
+        feats = inputs.input_features
+        T = feats.size(2)
+        if T < 3000:
+            feats = F.pad(feats, (0, 3000 - T))
+        else:
+            feats = feats[:, :, :3000]
+        feats = feats.to(self.device)
+
+        # ── Inference ─────────────────────────────────────────────────────────────
+        with torch.no_grad():
+            logits = self.model(feats)
+            probs  = F.softmax(logits, dim=1)   # (1, NUM_CLASSES)
+
+        # Extract top-2 to compute gap
+        top2_vals, top2_idxs = torch.topk(probs[0], k=min(2, probs.size(1)))
+        top1_conf    = float(top2_vals[0].item())
+        top2_conf    = float(top2_vals[1].item()) if top2_vals.size(0) > 1 else 0.0
+        gap          = top1_conf - top2_conf
+        detected_lang = _FT_LABEL_CLASSES[int(top2_idxs[0].item())]
+
+        return detected_lang, top1_conf, gap
+
 
 
 # ---------------------------------------------------------------------------
